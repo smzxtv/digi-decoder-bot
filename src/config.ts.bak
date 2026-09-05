@@ -1,0 +1,240 @@
+﻿import type { Env } from './env';
+
+/**
+ * 鏈哄櫒浜鸿繍琛屾椂閰嶇疆銆?
+ * 榛樿鍊煎唴缃湪浠ｇ爜涓紝鍙暣浣撹绠＄悊鍛樿鐩栵細
+ *   1. 璇诲彇 KV 涓殑瑕嗙洊閰嶇疆锛堣鐩栭厤缃互 JSON 褰㈠紡鏁翠綋瀛樺偍锛屼笌榛樿鍊兼繁鍚堝苟锛?
+ *   2. 绠＄悊鍛橀€氳繃 /setjson 淇敼锛?reload 閲嶆柊鍔犺浇锛?cfg 鏌ョ湅
+ */
+
+export interface FaqRule {
+  id: string;
+  keywords: string[];
+  mode: 'exact' | 'includes' | 'startsWith';
+  reply: string;
+}
+
+export interface BotConfig {
+  brand: {
+    name: string;
+    pointsName: string;
+    greeting: string;
+  };
+  welcome: {
+    enabled: boolean;
+    text: string; // 鍗犱綅绗? {name} {chat} {id}
+    deleteSystemMessages: boolean;
+  };
+  faq: FaqRule[];
+  checkin: {
+    enabled: boolean;
+    rewardPoints: number;
+    // 杩炵画绛惧埌閲岀▼纰戦澶栧鍔憋紙杈炬垚瀵瑰簲澶╂暟褰撳ぉ涓€娆℃€у彂鏀撅級
+    streakBonuses: { days: number; points: number }[];
+  };
+  invite: {
+    invitedReward: number; // 琚個璇蜂汉鑾峰緱
+    inviterReward: number; // 閭€璇蜂汉鑾峰緱
+  };
+  top: {
+    limit: number; // 鎺掕姒滃睍绀烘潯鏁?
+  };
+  ai: {
+    enabled: boolean;
+    model: string;
+    maxTokens: number;
+    promptSystem: string;
+    rateLimitPerMin: number;
+  };
+  tools: {
+    enabled: string[]; // 鍙敤宸ュ叿 id 鍒楄〃
+  };
+  limits: {
+    maxTextLen: number; // FAQ/AI 鍙備笌鐨勬渶闀挎枃鏈?
+  };
+  adblock: {
+    enabled: boolean;
+    keywords: string[]; // 骞垮憡鍏抽敭璇嶅垪琛?
+    action: 'delete' | 'delete_and_ban'; // 鍛戒腑鍚庣殑澶勭悊鏂瑰紡
+    adminBypass: boolean; // 绠＄悊鍛樻槸鍚﹁眮鍏嶆娴?
+  };
+}
+
+export const DEFAULT_CONFIG: BotConfig = {
+  brand: {
+    name: '鏁扮爜瑙ｇ爜宸ュ叿绔?,
+    pointsName: '瑙ｇ爜鐐?,
+    greeting: '娆㈣繋鏉ュ埌鏁扮爜瑙ｇ爜宸ュ叿绔?,
+  },
+  welcome: {
+    enabled: true,
+    text:
+      '馃帀 娆㈣繋 {name} 鍔犲叆 {chat}锛乗n\n' +
+      '馃洜 鏈珯鎻愪緵 IP 鏌ヨ / DNS 瑙ｆ瀽 / Ping 妫€娴?/ Base64 / JSON 瑙ｇ爜绛夊疄鐢ㄥ伐鍏凤紝\n' +
+      '骞舵敮鎸佸皢瑙ｇ爜鐐瑰厬鎹负宸ュ叿鏃堕暱涓庨珮绾ф湇鍔℃鏁般€俓n\n' +
+      '馃挵 姣忔棩绛惧埌銆侀個璇峰ソ鍙嬪嵆鍙幏寰楄В鐮佺偣銆俓n' +
+      '馃搶 鍥炲 /help 鎴栫偣鍑讳笅鏂硅彍鍗曞紑濮嬩娇鐢ㄣ€?,
+    deleteSystemMessages: true,
+  },
+  faq: [
+    {
+      id: 'faq_how_start',
+      keywords: ['鎬庝箞寮€濮?, '濡備綍浣跨敤', '宸ュ叿鍦ㄥ摢', '宸ュ叿鎬庝箞鐢?, '鏂版墜'],
+      mode: 'includes',
+      reply:
+        '馃搶 浣跨敤鎸囧崡锛歕n' +
+        '1锔忊儯 鍙戦€?/tools 鎵撳紑宸ュ叿绠憋紙IP/DNS/Ping/Base64/JSON锛塡n' +
+        '2锔忊儯 鍙戦€?/checkin 姣忔棩绛惧埌棰嗚В鐮佺偣\n' +
+        '3锔忊儯 鍙戦€?/me 鏌ョ湅瑙ｇ爜鐐逛綑棰漒n' +
+        '4锔忊儯 楂樼骇鏈嶅姟涓庢椂闀垮厬鎹㈣鍦ㄧ兢鍐呮煡鐪嬪厬鎹㈣鏄?,
+    },
+    {
+      id: 'faq_points',
+      keywords: ['瑙ｇ爜鐐?, '绉垎鎬庝箞鏉?, '绉垎鏈変粈涔堢敤', '濡備綍璧氱Н鍒?, '鐐规€庝箞鑾峰緱'],
+      mode: 'includes',
+      reply:
+        '馃拵 瑙ｇ爜鐐规槸鏈珯鏈嶅姟璐у竵锛歕n' +
+        '銉绘瘡鏃ョ鍒帮細+8 瑙ｇ爜鐐筡n' +
+        '銉昏繛缁鍒帮細绗?7/14/30 澶╂湁閲岀▼纰戝鍔盶n' +
+        '銉婚個璇峰ソ鍙嬶細鍙屾柟鍚勫緱濂栧姳\n\n' +
+        '瑙ｇ爜鐐瑰彲鐢ㄤ簬鍏戞崲 宸ュ叿浣跨敤鏃堕暱 / 楂樼骇鏈嶅姟娆℃暟 / 浼氬憳鐗规潈锛屽彂閫?/me 鏌ョ湅浣欓銆?,
+    },
+    {
+      id: 'faq_checkin',
+      keywords: ['绛惧埌', '鎵撳崱', '姣忔棩绛惧埌'],
+      mode: 'includes',
+      reply:
+        '馃摑 鍙戦€?/checkin 鍗冲彲姣忔棩绛惧埌锛乗n' +
+        '銉绘瘡鏃ュ熀纭€ +8 瑙ｇ爜鐐筡n' +
+        '銉昏繛缁?7 澶?+30銆?4 澶?+60銆?0 澶?+150锛堝綋澶╅澶栧彂鏀撅級\n' +
+        '鍧氭寔瓒婁箙濂栧姳瓒婂鍝︼紒',
+    },
+    {
+      id: 'faq_invite',
+      keywords: ['閭€璇?, '鎷変汉', '閭€璇峰ソ鍙?, '瑁傚彉'],
+      mode: 'includes',
+      reply:
+        '馃巵 鍙戦€?/invite 鑾峰彇浣犵殑涓撳睘閭€璇烽摼鎺ャ€俓n' +
+        '濂藉弸閫氳繃閾炬帴娉ㄥ唽锛氬ソ鍙?+20 瑙ｇ爜鐐癸紝浣?+35 瑙ｇ爜鐐广€俓n' +
+        '閭€璇疯秺澶氾紝瑙ｉ攣鐨勫伐鍏锋椂闀胯秺澶氾紒',
+    },
+    {
+      id: 'faq_tools',
+      keywords: ['ip', 'dns', 'ping', 'base64', 'json', '瑙ｇ爜宸ュ叿', '宸ュ叿'],
+      mode: 'includes',
+      reply:
+        '馃О 宸ュ叿绠辨敮鎸侊細\n' +
+        '銉籌P 褰掑睘鏌ヨ 鈫?/ip\n' +
+        '銉籇NS 瑙ｆ瀽 鈫?/dns 鍩熷悕 AAAA\n' +
+        '銉籔ing 寤惰繜妫€娴?鈫?/ping 鍩熷悕\n' +
+        '銉籅ase64 缂栬В鐮?鈫?/b64 encode 鏂囨湰\n' +
+        '銉籎SON 鏍煎紡鍖?鈫?/json {"a":1}\n\n' +
+        '鐩存帴鍙戦€?/tools 鎵撳紑闈㈡澘鏇存柟渚匡紒',
+    },
+    {
+      id: 'faq_redeem',
+      keywords: ['鍏戞崲', '鍏戞崲鐮?, '鍗″瘑', '鍏呭€?],
+      mode: 'includes',
+      reply:
+        '馃師 鍦ㄧ鐞嗗憳澶勮喘涔?棰嗗彇鍏戞崲鐮佸悗锛岀鑱婂彂閫侊細\n' +
+        '<code>/redeem 鍏戞崲鐮?/code>\n' +
+        '鍗冲彲鍏戞崲瀵瑰簲闈㈠€肩殑瑙ｇ爜鐐癸紝鐢ㄤ簬瑙ｉ攣宸ュ叿鏃堕暱涓庢湇鍔°€?,
+    },
+    {
+      id: 'faq_hello',
+      keywords: ['浣犲ソ', '鎮ㄥソ', 'hi', 'hello', '鍦ㄥ悧'],
+      mode: 'exact',
+      reply: '浣犲ソ鍛€锛佽繖閲屾槸鏁扮爜瑙ｇ爜宸ュ叿绔?馃 鍙戦€?/help 鏌ョ湅鍏ㄩ儴鍔熻兘銆?,
+    },
+  ],
+  checkin: {
+    enabled: true,
+    rewardPoints: 8,
+    streakBonuses: [
+      { days: 7, points: 30 },
+      { days: 14, points: 60 },
+      { days: 30, points: 150 },
+    ],
+  },
+  invite: {
+    invitedReward: 20,
+    inviterReward: 35,
+  },
+  top: {
+    limit: 10,
+  },
+  ai: {
+    enabled: true,
+    model: '@cf/meta/llama-3.2-3b-instruct',
+    maxTokens: 512,
+    promptSystem:
+      '浣犳槸"鏁扮爜瑙ｇ爜宸ュ叿绔?鐨勬櫤鑳藉姪鎵嬶紝鐔熸倝 IP/DNS/Ping 妫€娴嬨€丅ase64/JSON 瑙ｇ爜绛夌綉缁滃伐鍏风殑浣跨敤鏂规硶锛屼篃鑳借В绛旇В鐮佺偣鑾峰彇涓庡厬鎹㈣鍒欍€傚洖绛斾娇鐢ㄧ畝浣撲腑鏂囷紝绠€娲佷笓涓氾紝浣犳槸\"鏁扮爜瑙ｇ爜宸ュ叿绔橽" Telegram 鏈哄櫒浜虹殑鏅鸿兘鍔╂墜銆備綘鍙洖绛斾笌鏈?Bot 鍔熻兘鐩稿叧鐨勯棶棰橈紝鍖呮嫭锛氭瘡鏃ョ鍒般€佽В鐮佺偣銆侀個璇峰鍔便€佸伐鍏风锛圔ase64/JSON缂栬В鐮併€丏NS瑙ｆ瀽銆丳ing妫€娴嬨€両P鏌ヨ锛夈€丗AQ 绛夈€備笉瑕佺紪閫犱换浣?Linux 鍛戒护鎴栧閮ㄥ伐鍏枫€傚洖绛斾娇鐢ㄧ畝浣撲腑鏂囷紝绠€娲佷笓涓氥€傚鏋滅敤鎴烽棶鐨勯棶棰樿秴鍑轰笂杩拌寖鍥达紝绀艰矊鍦板紩瀵间粬浠娇鐢?/help 鏌ョ湅鍙敤鍔熻兘銆傘€?,
+    rateLimitPerMin: 8,
+  },
+  tools: {
+    enabled: ['base64', 'json', 'dns', 'ping', 'ip', 'deco'],
+  },
+  limits: {
+    maxTextLen: 2000,
+  },
+  adblock: {
+    enabled: true,
+    keywords: [
+      '鍔犵兢', '鍏艰亴', '鍒峰崟', '鏃ヨ禋', '鏈堣禋', '璧氶挶',
+      '鍏嶈垂棰?, '鍏嶈垂棰?, '鎵爜', '鍔犳垜', '钖囦俊', 'vx', 'v淇?,
+      '浠ｈ喘', '浠ｇ悊', '鎷涘晢', '鍔犵洘', '鎶曡祫', '鐞嗚储',
+      '褰╃エ', '鍗氬僵', '璧?, '妫嬬墝', '绋宠禋', '鍖呰禋',
+      '璐锋', '鍊熸', '淇＄敤鍗″鐜?, '浠ｅ紑', '鍙戠エ',
+      '鍔燪Q', '鍔犲井淇?, '鍔燰', '鍔犺枃', '鍔犳墸',
+      '鎷涜仒', '璇氳仒', '楂樿柂', '鎬ヨ仒', '鐩磋仒',
+    ],
+    action: 'delete',
+    adminBypass: true,
+  },
+};
+
+const CONFIG_KV_KEY = 'bot:config:v1';
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** 娣卞悎骞讹紙榛樿 <- 瑕嗙洊閰嶇疆锛?*/
+function deepMerge<T>(base: T, overlay: unknown): T {
+  if (!isPlainObject(base) || !isPlainObject(overlay)) {
+    return overlay === undefined ? base : (overlay as T);
+  }
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const key of Object.keys(overlay)) {
+    out[key] = deepMerge(out[key], (overlay as Record<string, unknown>)[key]);
+  }
+  return out as T;
+}
+
+/** 鑾峰彇鐢熸晥閰嶇疆锛圞V 缂撳瓨璇诲彇锛?*/
+export async function getConfig(env: Env): Promise<BotConfig> {
+  try {
+    const raw = await env.KV.get(CONFIG_KV_KEY);
+    if (raw) {
+      try {
+        const overlay = JSON.parse(raw);
+        return deepMerge(DEFAULT_CONFIG, overlay);
+      } catch {
+        // 閰嶇疆鎹熷潖鍒欏洖閫€榛樿
+      }
+    }
+  } catch {
+    // KV 涓嶅彲鐢ㄦ椂鍥為€€榛樿
+  }
+  return DEFAULT_CONFIG;
+}
+
+/** 瑕嗙洊閰嶇疆锛堢鐞嗗憳鐢?/setjson 缂栬緫鏁翠綋閰嶇疆锛?*/
+export async function setConfigOverlay(env: Env, overlay: Record<string, unknown>): Promise<void> {
+  await env.KV.put(CONFIG_KV_KEY, JSON.stringify(overlay));
+}
+
+/** 閲嶇疆涓洪粯璁ら厤缃?*/
+export async function resetConfig(env: Env): Promise<void> {
+  await env.KV.delete(CONFIG_KV_KEY);
+}
