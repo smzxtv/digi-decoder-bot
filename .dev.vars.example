@@ -1,0 +1,12 @@
+# 复制本文件为 .dev.vars（已 gitignore），本地调试时使用。
+# 线上环境请用：npx wrangler secret put TELEGRAM_BOT_TOKEN
+
+# 必填：BotFather 给你的 bot token
+TELEGRAM_BOT_TOKEN=123456789:AA...
+# 选填：用于加固 webhook 的 secret token（与 setWebhook 一致）
+TELEGRAM_WEBHOOK_SECRET=random_secret_please_change
+# 选填：部署后的完整 webhook 地址，便于脚本 set-webhook 使用
+WEBHOOK_URL=https://bot.example.com/webhook/bot
+# 选填：你的 Telegram 数字 ID（用于本地测试管理员功能）
+# 不知道自己的 ID？给 Telegram 上的 @userinfobot 发条消息就知道了
+DEFAULT_OWNER_ID=123456789
