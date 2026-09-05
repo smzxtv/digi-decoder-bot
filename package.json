@@ -1,0 +1,25 @@
+{
+  "name": "digi-decoder-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "数码解码机器人 · Cloudflare 版 —— 基于 Cloudflare Workers 生态（Workers + D1 + KV + R2 + Queues + Workers AI）的 Telegram 机器人",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply digi-decoder-db",
+    "db:migrate:local": "wrangler d1 migrations apply digi-decoder-db --local",
+    "types": "tsc --noEmit",
+    "webhook": "node scripts/set-webhook.mjs",
+    "webhook:delete": "node scripts/set-webhook.mjs --delete"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260905.1",
+    "typescript": "^5.4.5",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "rollup-plugin-node-polyfills": "^0.2.1",
+    "unenv": "^2.0.0-rc.14"
+  }
+}
