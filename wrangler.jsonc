@@ -1,0 +1,61 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "digi-decoder-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ---- 公开变量（用 wrangler secret put 存储敏感项）----
+  "vars": {
+    "TELEGRAM_BOT_USERNAME": "shuma_jiema_bot",
+    "DEFAULT_OWNER_ID": "8970770762",
+    "ADMINS": "",
+    "TIME_ZONE_OFFSET_HOURS": "8"
+  },
+
+  // Workers AI
+  "ai": {
+    "binding": "AI"
+  },
+
+  // D1（SQLite）结构化存储
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "digi-decoder-db",
+      "database_id": "e2682ec2-0e85-4f85-8425-441beb469fa9",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // KV：高频键值存储（配置缓存 / 会话状态 / 速率限制）
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "cc6db9573aa541aeaed7014e0c7aa6b3"
+    }
+  ],
+
+  // Queues：生产者（绑定）与消费者
+  "queues": {
+    "producers": [
+      {
+        "binding": "TASK_QUEUE",
+        "queue": "bot-queue"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "bot-queue",
+        "max_batch_size": 5,
+        "max_batch_timeout": 10,
+        "max_retries": 3
+      }
+    ]
+  },
+
+  // 定时触发器（每年1月1日、每月1日 05:00 Asia/Shanghai）
+  "triggers": {
+    "crons": ["0 5 1 * *"]
+  }
+}
