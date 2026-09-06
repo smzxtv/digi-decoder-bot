@@ -4,36 +4,14 @@ import type { TgUpdate } from './telegram-types';
 import { handleUpdate } from './dispatch';
 import { handleQueueBatch } from './queue';
 import { appendLog } from './handlers/admin';
-import { getConfig } from './config';
 
 // 简易内存缓存：广告配置（KV 读取后缓存，避免每次请求都读 KV）
-let _adCache: Env['AD_BLOCK_CFG'] | undefined;
-let _adCacheAt = 0;
-const AD_CACHE_TTL_MS = 60_000; // 1 分钟缓存
-
-/** 获取广告配置（带缓存） */
-async function getAdCfg(env: Env): Promise<Env['AD_BLOCK_CFG']> {
-  const now = Date.now();
-  if (_adCache && now - _adCacheAt < AD_CACHE_TTL_MS) return _adCache;
-  const cfg = await getConfig(env);
-  _adCache = cfg.adblock;
-  _adCacheAt = now;
-  return cfg.adblock;
-}
-
-/**
- * 数码解码机器人 · Cloudflare Workers 入口
- * - fetch: webhook 接收 Telegram 更新
- * - queue: 消费者处理后台任务（群发/推送）
- * - scheduled: 定时备份到 R2 + 日志
- */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     // 注入广告配置到 env
-    env.AD_BLOCK_CFG = await getAdCfg(env);
-
+    
     // 健康检查
     if (url.pathname === '/' && request.method === 'GET') {
       return Response.json({ ok: true, service: 'digi-decoder-bot', time: new Date().toISOString() });
