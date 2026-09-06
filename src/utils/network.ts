@@ -105,3 +105,16 @@ export async function queryIp(ip?: string): Promise<IpInfo> {
     uag: map.get('uag') ?? null,
   };
 }
+// ---------------- URL 编解码 ----------------
+
+export function urlEncode(text: string): string {
+  return encodeURIComponent(text);
+}
+
+export function urlDecode(text: string): string {
+  try {
+    return decodeURIComponent(text.trim());
+  } catch {
+    throw new Error('URL 解码失败：内容不是合法的百分号编码');
+  }
+}
