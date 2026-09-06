@@ -1,4 +1,4 @@
-import type { Ctx } from '../ctx';
+﻿import type { Ctx } from '../ctx';
 import { getConfig } from '../config';
 import { getUser, getUserRank, registerInvite } from '../db';
 import { esc } from '../utils/text';
@@ -6,11 +6,11 @@ import { b64Encode, b64Decode, jsonBeautify, dnsQuery, pingHost, queryIp } from 
 import { btn } from '../telegram';
 import { mainKeyboard, mainMenuText } from './menu';
 import { showTools } from './tools';
-import { doCheckin } from './checkin';
+import { doCheckin, checkinHome } from './checkin';
 import { cmdMe, cmdTop, cmdInvite, cmdRedeem } from './points';
 import { cmdAI } from './aiChat';
-import { tutorialsHome, adminAddTutorial } from './tutorials';
-import { faqListText } from './faq';
+import { tutorialsHome } from './tutorials';
+import { cmdLucky } from './lucky';
 import { clearPending } from './tools';
 
 export type CommandHandler = (ctx: Ctx) => Promise<void>;
@@ -54,32 +54,24 @@ export const cmdHelp: CommandHandler = async (ctx) => {
   const text = [
     `🤖 <b>数码解码工具站</b>`,
     ``,
-    `📌 基础功能`,
-    `<code>/start</code> 注册 & 主菜单`,
-    `<code>/me</code> 我的解码点  <code>/top</code> 排行榜`,
-    `<code>/checkin</code> 每日签到`,
-    `<code>/invite</code> 邀请好友赚解码点`,
-    `<code>/redeem</code> 使用兑换码`,
+    `📝 <b>签到</b>`,
+    `<code>/checkin</code> 今日签到　<code>/checkin</code> 菜单含本月记录`,
+    `<code>/top</code> 签到排行`,
     ``,
-    `🧰 工具箱`,
+    `🧰 <b>工具箱</b>`,
     `<code>/tools</code> 工具箱面板`,
-    `<code>/b64</code> Base64  <code>/json</code> JSON整理`,
-    `<code>/dns</code> DNS查询  <code>/ping</code> 延迟检测  <code>/ip</code> IP查询`,
+    `<code>/b64</code> Base64　<code>/url</code> URL编解码　<code>/json</code> JSON整理`,
+    `<code>/dns</code> DNS查询　<code>/ping</code> 延迟检测　<code>/ip</code> IP查询`,
     ``,
-    `📚 学习 & AI`,
+    `📚 <b>学习 & AI</b>`,
     `<code>/tutorials</code> 教程中心`,
-    `<code>/faq</code> 常见问题`,
     `<code>/ai 问题</code> AI 智能问答`,
     ``,
-    `私聊中输入任意文字也会触发自动问答与 AI 回复哦。`,
+    `🎁 <b>福利</b>`,
+    `<code>/invite</code> 邀请奖励　<code>/lucky</code> 幸运粉丝`,
+    `<code>/me</code> 我的解码点　<code>/redeem</code> 兑换码`,
   ].join('\n');
   await ctx.reply(text, { inlineKeyboard: [[btn('⬅ 返回主菜单', 'menu:main')]] });
-};
-
-/** /faq 常见问题列表 */
-export const cmdFaq: CommandHandler = async (ctx) => {
-  const cfg = await getConfig(ctx.env);
-  await ctx.reply(faqListText(cfg), { inlineKeyboard: [[btn('⬅ 返回主菜单', 'menu:main')]] });
 };
 
 /** /cancel 清除待处理工具状态 */
@@ -95,9 +87,23 @@ export const cmdB64: CommandHandler = async (ctx) => {
   if (!raw) return showTools(ctx);
   const m = raw.match(/^(enc(ode)?|dec(ode)?)\s+([\s\S]+)$/i);
   const mode = m ? (/^de/i.test(m[1]) ? 'decode' : 'encode') : 'encode';
-  const data = m ? m[3] : raw;
+  const data = m ? m[4] : raw;
   try {
     const out = mode === 'encode' ? b64Encode(data) : b64Decode(data);
+    await ctx.reply(`<b>${mode === 'encode' ? '编码' : '解码'}结果：</b>\n<code>${esc(out.slice(0, 3800))}</code>`);
+  } catch (e) {
+    await ctx.reply(`⚠️ ${e instanceof Error ? e.message : '处理失败'}`);
+  }
+};
+
+export const cmdUrl: CommandHandler = async (ctx) => {
+  const raw = ctx.arg.trim();
+  if (!raw) return showTools(ctx);
+  const m = raw.match(/^(enc(ode)?|dec(ode)?)\s+([\s\S]+)$/i);
+  const mode = m ? (/^de/i.test(m[1]) ? 'decode' : 'encode') : 'encode';
+  const data = m ? m[4] : raw;
+  const out = mode === 'encode' ? encodeURIComponent(data) : (() => { try { return decodeURIComponent(data); } catch { throw new Error('URL 解码失败：内容不是合法的百分号编码'); } })();
+  try {
     await ctx.reply(`<b>${mode === 'encode' ? '编码' : '解码'}结果：</b>\n<code>${esc(out.slice(0, 3800))}</code>`);
   } catch (e) {
     await ctx.reply(`⚠️ ${e instanceof Error ? e.message : '处理失败'}`);
@@ -169,18 +175,9 @@ export const cmdIp: CommandHandler = async (ctx) => {
   }
 };
 
-// ---------------- 教程 / AI 等 ----------------
+// ---------------- 教程 / 幸运粉丝 ----------------
 
 export const cmdTutorials: CommandHandler = async (ctx) => {
-  const arg = ctx.arg.trim();
-  if (arg.startsWith('add ')) {
-    if (!ctx.isAdmin && !ctx.isOwner) {
-      await ctx.reply('❌ 无管理员权限');
-      return;
-    }
-    await adminAddTutorial(ctx, arg.slice(4));
-    return;
-  }
   await tutorialsHome(ctx);
 };
 
@@ -190,13 +187,13 @@ export const COMMANDS: Record<string, CommandHandler> = {
   start: cmdStart,
   me: cmdMe,
   help: cmdHelp,
-  faq: cmdFaq,
   checkin: doCheckin,
   top: cmdTop,
   invite: cmdInvite,
   redeem: cmdRedeem,
   tools: showTools,
   b64: cmdB64,
+  url: cmdUrl,
   json: cmdJson,
   dns: cmdDns,
   ping: cmdPing,
@@ -204,6 +201,10 @@ export const COMMANDS: Record<string, CommandHandler> = {
   ai: cmdAI,
   tutorial: cmdTutorials,
   tutorials: cmdTutorials,
+  lucky: cmdLucky,
   cancel: cmdCancel,
   // 管理员命令在 adminCommands.ts 中合并
 };
+
+// checkinHome 在签到面板按钮中通过 ck:show 触发
+void checkinHome;
