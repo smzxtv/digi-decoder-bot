@@ -24,7 +24,6 @@ export interface Env {
   TASK_QUEUE: Queue<QueueJob>;
 
   // ---- 缓存配置（由 index.ts 启动时注入）----
-  AD_BLOCK_CFG?: BotConfig['adblock'];
 }
 
 export type ParseMode = 'HTML' | 'MarkdownV2' | undefined;
