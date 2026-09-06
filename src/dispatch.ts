@@ -1,15 +1,12 @@
-import type { Env } from './env';
+﻿import type { Env } from './env';
 import { makeCtx } from './ctx';
 import { ensureUser } from './db';
 import { checkBanStatus, rateLimit } from './middleware';
 import { getConfig } from './config';
 import { handleCallback } from './handlers/callbacks';
-import { handleChatMemberEvent, handleNewMembers } from './handlers/welcome';
 import { ALL_COMMANDS } from './handlers/adminCommands';
-import { matchFaq } from './handlers/faq';
 import { getPending, handleToolInput } from './handlers/tools';
 import { cmdAI } from './handlers/aiChat';
-import { handleAdblock } from './handlers/adblock';
 import { btn } from './telegram';
 import type { TgUpdate } from './telegram-types';
 
@@ -61,12 +58,6 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
     return;
   }
 
-  // 群成员变化（欢迎/移除）
-  if (update.chat_member || update.my_chat_member) {
-    await handleChatMemberEvent(ctx);
-    return;
-  }
-
   // 普通消息
   if (update.message) {
     await handleMessage(ctx);
@@ -77,12 +68,6 @@ export async function handleUpdate(env: Env, update: TgUpdate): Promise<void> {
 async function handleMessage(ctx: ReturnType<typeof makeCtx>): Promise<void> {
   const msg = ctx.message;
   if (!msg) return;
-
-  // 兼容旧式 new_chat_members 入群消息
-  if (msg.new_chat_members && msg.new_chat_members.length > 0) {
-    await handleNewMembers(ctx);
-    if (!msg.text && !msg.caption) return;
-  }
 
   const text = (msg.text ?? msg.caption ?? '').trim();
 
@@ -99,45 +84,30 @@ async function handleMessage(ctx: ReturnType<typeof makeCtx>): Promise<void> {
     return;
   }
 
-  // 非命令消息
-  if (ctx.isPrivate) {
-    // 1) 消费工具待处理输入
-    if (ctx.from) {
-      const pending = await getPending(ctx.env, ctx.from.id);
-      if (pending && text) {
-        await handleToolInput(ctx, text);
-        return;
-      }
-    }
-    if (!text) return;
+  // 非命令消息（仅私聊处理）
+  if (!ctx.isPrivate) return;
 
-    const cfg = await getConfig(ctx.env);
-    if (text.length > cfg.limits.maxTextLen) {
-      await ctx.reply('消息太长啦，请精简后重试（最多 ' + cfg.limits.maxTextLen + ' 字符）。');
+  // 1) 消费工具待处理输入
+  if (ctx.from) {
+    const pending = await getPending(ctx.env, ctx.from.id);
+    if (pending && text) {
+      await handleToolInput(ctx, text);
       return;
     }
-    // 2) FAQ 关键词
-    const faq = matchFaq(cfg, text);
-    if (faq) {
-      await ctx.reply(faq);
-      return;
-    }
-    // 3) AI 兜底
-    if (cfg.ai.enabled) {
-      await cmdAI(ctx);
-      return;
-    }
-    await ctx.reply('发送 /help 看看我能做什么 😊', {
-      inlineKeyboard: [[btn('📖 打开帮助', 'hp:show')]],
-    });
-  } else if (ctx.isGroup) {
-    // 群聊：先做广告过滤
-    const isAd = await handleAdblock(ctx);
-    if (isAd) return;
-
-    const cfg = await getConfig(ctx.env);
-    if (!text || text.length > cfg.limits.maxTextLen) return;
-    const faq = matchFaq(cfg, text);
-    if (faq) await ctx.reply(faq, { replyTo: true });
   }
+  if (!text) return;
+
+  const cfg = await getConfig(ctx.env);
+  if (text.length > cfg.limits.maxTextLen) {
+    await ctx.reply('消息太长啦，请精简后重试（最多 ' + cfg.limits.maxTextLen + ' 字符）。');
+    return;
+  }
+  // 2) AI 兜底
+  if (cfg.ai.enabled) {
+    await cmdAI(ctx);
+    return;
+  }
+  await ctx.reply('发送 /help 看看我能做什么 😊', {
+    inlineKeyboard: [[btn('📖 打开帮助', 'hp:show')]],
+  });
 }
