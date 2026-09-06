@@ -1,13 +1,15 @@
 import type { Ctx } from '../ctx';
 import { getConfig } from '../config';
 import { btn } from '../telegram';
-import { b64Encode, b64Decode, jsonBeautify, jsonMinify, dnsQuery, pingHost, queryIp } from '../utils/network';
+import { b64Encode, b64Decode, jsonBeautify, jsonMinify, dnsQuery, pingHost, queryIp, urlEncode, urlDecode } from '../utils/network';
 import { esc, splitLong } from '../utils/text';
 import type { Env } from '../env';
+import type { TgInlineKeyboardButton } from '../telegram-types';
 
 export type PendingTool =
   | { t: 'base64'; d: 'encode' | 'decode' }
   | { t: 'json'; d: 'beautify' | 'minify' }
+  | { t: 'url'; d: 'encode' | 'decode' }
   | { t: 'dns'; d: string }
   | { t: 'ping'; d: string };
 
@@ -33,37 +35,46 @@ export async function clearPending(env: Env, uid: number): Promise<void> {
 }
 
 /** 工具箱主键盘 */
-export function toolsKeyboard() {
+export async function toolsKeyboard(env?: Env): Promise<TgInlineKeyboardButton[][]> {
+  let more: TgInlineKeyboardButton[][] = [];
+  if (env) {
+    const cfg = await getConfig(env);
+    if (cfg.tools.moreTools.length > 0) {
+      more = [cfg.tools.moreTools.map((t) => ({ text: t.label, url: t.url }))];
+    }
+  }
   return [
-    [btn('🔐 Base64 编解码', 'tl:b64')],
+    [btn('🔐 Base64 编解码', 'tl:b64'), btn('🔗 URL 编解码', 'tl:url')],
     [btn('🧾 JSON 整理', 'tl:json')],
     [btn('🌐 DNS 查询', 'tl:dns'), btn('📡 Ping 检测', 'tl:ping')],
     [btn('🌍 我的 IP', 'tl:ip')],
+    ...more,
     [btn('⬅ 返回主菜单', 'menu:main')],
   ];
 }
 
 export async function showTools(ctx: Ctx): Promise<void> {
-  const cfg = await getConfig(ctx.env);
-  void cfg;
   const text = [
     `🧰 <b>数码工具箱</b>`,
     ``,
     `可用工具：`,
     `　🔐 Base64 编码 / 解码`,
+    `　🔗 URL 编码 / 解码`,
     `　🧾 JSON 格式化 / 压缩`,
     `　🌐 DNS 查询（A / AAAA / MX / TXT）`,
     `　📡 Ping / HTTP 延迟检测`,
     `　🌍 IP 归属查询`,
+    `　🖼 图片压缩等更多在线工具（见下方链接）`,
     ``,
     `点击下方按钮使用；或在私聊中直接输入命令，例如：`,
     `<code>/b64 encode 文本</code>`,
+    `<code>/url encode 文本</code>`,
     `<code>/json {"a":1}</code>`,
     `<code>/dns example.com AAAA</code>`,
     `<code>/ping example.com</code>`,
     `<code>/ip</code>`,
   ].join('\n');
-  await ctx.reply(text, { inlineKeyboard: toolsKeyboard() });
+  await ctx.reply(text, { inlineKeyboard: await toolsKeyboard(ctx.env) });
 }
 
 /** 处理回调型工具操作 */
@@ -98,6 +109,20 @@ export async function handleToolsCallback(ctx: Ctx, data: string): Promise<void>
       } else {
         await ctx.keypad('🧾 JSON 操作：', [
           [btn('🪄 格式化', 'tl:json:beautify'), btn('🗜️ 压缩', 'tl:json:minify')],
+          [btn('⬅ 返回工具箱', 'tl:show')],
+        ]);
+      }
+      return;
+    }
+    case 'url': {
+      if (parts[2]) {
+        const mode = parts[2];
+        if (mode !== 'encode' && mode !== 'decode') return;
+        await setPending(ctx.env, ctx.from.id, { t: 'url', d: mode });
+        await ctx.answer(mode === 'encode' ? '✅ 请发送要编码的文本' : '✅ 请发送要解码的 URL', true);
+      } else {
+        await ctx.keypad('🔗 URL 操作：', [
+          [btn('⬆️ 编码', 'tl:url:encode'), btn('⬇️ 解码', 'tl:url:decode')],
           [btn('⬅ 返回工具箱', 'tl:show')],
         ]);
       }
@@ -158,6 +183,14 @@ export async function handleToolInput(ctx: Ctx, input: string): Promise<void> {
           await ctx.reply(`<code>${esc(part)}</code>`);
         }
         await ctx.reply('处理完成 ✅', { inlineKeyboard: [[btn('⬅ 返回工具箱', 'tl:show')]] });
+        break;
+      }
+      case 'url': {
+        const out = state.d === 'encode' ? urlEncode(body) : urlDecode(body);
+        await ctx.reply(
+          `<b>${state.d === 'encode' ? '编码' : '解码'}结果：</b>\n<code>${esc(out.slice(0, 3800))}</code>`,
+          { inlineKeyboard: [[btn('⬅ 返回工具箱', 'tl:show')]] }
+        );
         break;
       }
       case 'dns': {
