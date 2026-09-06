@@ -1,11 +1,12 @@
-import type { Ctx } from '../ctx';
+﻿import type { Ctx } from '../ctx';
 import { getConfig, type BotConfig } from '../config';
 import { getUser, getUserRank } from '../db';
-import { doCheckin } from './checkin';
+import { doCheckin, checkinHome, checkinMonth } from './checkin';
 import { cmdTop, cmdInvite, cmdMe } from './points';
 import { handleToolsCallback, showTools } from './tools';
-import { tutorialsHome, tutorialsByCategory, tutorialContent } from './tutorials';
+import { tutorialsHome } from './tutorials';
 import { aiHelp } from './aiChat';
+import { luckyHome, luckyAdmin, luckyCount, luckyList, luckyDraw, luckyRedraw, luckyWinners, luckyShip, luckyHistory } from './lucky';
 import { cmdHelp } from './commands';
 import { adminPanel, cmdStats, cmdReload } from './admin';
 import { mainKeyboard, mainMenuText } from './menu';
@@ -22,6 +23,8 @@ export async function handleCallback(ctx: Ctx): Promise<void> {
       break;
     case 'ck':
       if (data === 'ck:do') await doCheckin(ctx);
+      else if (data === 'ck:show') await checkinHome(ctx);
+      else if (data === 'ck:month') await checkinMonth(ctx);
       break;
     case 'pt':
       if (data === 'pt:me') await cmdMe(ctx);
@@ -33,17 +36,33 @@ export async function handleCallback(ctx: Ctx): Promise<void> {
     case 'hp':
       if (data === 'hp:show') await cmdHelp(ctx);
       break;
+    case 'lk': {
+      const op = data.split(':')[1];
+      if (op === 'show' || op === undefined) {
+        await luckyHome(ctx);
+        break;
+      }
+      // 管理操作需管理员权限
+      if (!ctx.isOwner && !ctx.isAdmin) {
+        await ctx.answer('❌ 无管理员权限', true);
+        break;
+      }
+      if (op === 'admin') await luckyAdmin(ctx);
+      else if (op === 'count') await luckyCount(ctx);
+      else if (op === 'list') await luckyList(ctx);
+      else if (op === 'draw') await luckyDraw(ctx);
+      else if (op === 'redraw') await luckyRedraw(ctx);
+      else if (op === 'winners') await luckyWinners(ctx);
+      else if (op === 'ship') await luckyShip(ctx);
+      else if (op === 'history') await luckyHistory(ctx);
+      break;
+    }
     case 'tl':
       await handleToolsCallback(ctx, data);
       break;
-    case 'tu': {
-      const parts = data.split(':');
-      const op = parts[1];
-      if (op === 'show') await tutorialsHome(ctx);
-      else if (op === 'cat') await tutorialsInCategory(ctx, parts.slice(2).join(':'));
-      else if (op === 'it') await tutorialContent(ctx, Number(parts[2]));
+    case 'tu':
+      if (data === 'tu:show') await tutorialsHome(ctx);
       break;
-    }
     case 'ai':
       if (data === 'ai:show') await aiHelp(ctx);
       break;
@@ -61,10 +80,6 @@ export async function handleCallback(ctx: Ctx): Promise<void> {
     default:
       await ctx.answer('⚠️ 未知操作', true);
   }
-}
-
-async function tutorialsInCategory(ctx: Ctx, raw: string): Promise<void> {
-  await tutorialsByCategory(ctx, raw);
 }
 
 /** 重新渲染主菜单 */
