@@ -1,4 +1,4 @@
-import type { Ctx } from '../ctx';
+﻿import type { Ctx } from '../ctx';
 import { COMMANDS, type CommandHandler } from './commands';
 import {
   adminPanel,
@@ -13,10 +13,6 @@ import {
   cmdLog,
   cmdBroadcast,
   cmdNotify,
-  cmdAddAd,
-  cmdDelAd,
-  cmdAdList,
-  cmdAdBlock,
 } from './admin';
 
 /** 包一层权限校验 */
@@ -43,10 +39,6 @@ export const ADMIN_COMMANDS: Record<string, CommandHandler> = {
   log: requireAdmin(cmdLog),
   broadcast: requireAdmin(cmdBroadcast),
   notify: requireAdmin(cmdNotify),
-  addad: requireAdmin(cmdAddAd),
-  delad: requireAdmin(cmdDelAd),
-  adlist: requireAdmin(cmdAdList),
-  adblock: requireAdmin(cmdAdBlock),
 };
 
 /** 全量命令表 */
