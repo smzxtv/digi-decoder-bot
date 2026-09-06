@@ -306,3 +306,163 @@ export async function getStats(db: D1Database) {
     unusedPoints: orders?.amt ?? 0,
   };
 }
+// ---------------- 月度签到统计 ----------------
+
+/** 查询用户某月（YYYY-MM）签到天数 */
+export async function monthCheckinCount(db: D1Database, userId: number, month: string): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM checkins WHERE user_id = ? AND substr(date, 1, 7) = ?")
+    .bind(userId, month)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+// ---------------- 幸运粉丝（活动管理） ----------------
+
+export interface LuckyCampaignRow {
+  id: number;
+  title: string;
+  prize: string;
+  winners_count: number;
+  min_checkins: number;
+  status: string; // active | drawn
+  draw_month: string | null;
+  drawn_at: string | null;
+  created_by: number | null;
+  created_at: string;
+}
+
+export interface LuckyWinnerRow {
+  id: number;
+  campaign_id: number;
+  user_id: number;
+  first_name: string | null;
+  username: string | null;
+  prize: string;
+  shipped: number;
+  ship_note: string;
+  created_at: string;
+}
+
+export async function getActiveCampaign(db: D1Database): Promise<LuckyCampaignRow | null> {
+  const row = await db
+    .prepare("SELECT * FROM lucky_campaigns WHERE status = 'active' ORDER BY id DESC LIMIT 1")
+    .first<LuckyCampaignRow>();
+  return row ?? null;
+}
+
+export async function getCampaign(db: D1Database, id: number): Promise<LuckyCampaignRow | null> {
+  const row = await db.prepare('SELECT * FROM lucky_campaigns WHERE id = ?').bind(id).first<LuckyCampaignRow>();
+  return row ?? null;
+}
+
+export async function createCampaign(
+  db: D1Database,
+  opts: { title?: string; prize: string; winnersCount: number; minCheckins: number; createdBy: number }
+): Promise<LuckyCampaignRow> {
+  // 同时只保留一个进行中的活动：创建新活动时关闭旧活动
+  await db.prepare("UPDATE lucky_campaigns SET status = 'closed' WHERE status = 'active'").run();
+  const res = await db
+    .prepare(
+      'INSERT INTO lucky_campaigns (title, prize, winners_count, min_checkins, created_by) VALUES (?, ?, ?, ?, ?)'
+    )
+    .bind(opts.title ?? '幸运粉丝抽奖', opts.prize, opts.winnersCount, opts.minCheckins, opts.createdBy)
+    .run();
+  const id = Number(res.meta?.last_row_id ?? 0);
+  return (await getCampaign(db, id))!;
+}
+
+/** 获取活动符合资格的用户（本月签到满门槛 且 未拉黑） */
+export async function getEligibleUsers(
+  db: D1Database,
+  campaign: LuckyCampaignRow,
+  month: string
+): Promise<{ id: number; first_name: string | null; username: string | null; days: number }[]> {
+  const res = await db
+    .prepare(
+      `SELECT u.id, u.first_name, u.username,
+              (SELECT COUNT(*) FROM checkins c WHERE c.user_id = u.id AND substr(c.date, 1, 7) = ?) AS days
+       FROM users u
+       WHERE u.is_banned = 0`
+    )
+    .bind(month)
+    .all<{ id: number; first_name: string | null; username: string | null; days: number }>();
+  return (res.results ?? []).filter((u) => u.days >= campaign.min_checkins);
+}
+
+export async function campaignWinners(db: D1Database, campaignId: number): Promise<LuckyWinnerRow[]> {
+  const res = await db
+    .prepare(
+      `SELECT w.id, w.campaign_id, w.user_id, u.first_name, u.username,
+              w.prize, w.shipped, w.ship_note, w.created_at
+       FROM lucky_winners w LEFT JOIN users u ON u.id = w.user_id
+       WHERE w.campaign_id = ? ORDER BY w.id`
+    )
+    .bind(campaignId)
+    .all<LuckyWinnerRow>();
+  return res.results ?? [];
+}
+
+export async function pastCampaigns(db: D1Database, limit = 10): Promise<LuckyCampaignRow[]> {
+  const res = await db
+    .prepare("SELECT * FROM lucky_campaigns WHERE status != 'active' ORDER BY id DESC LIMIT ?")
+    .bind(limit)
+    .all<LuckyCampaignRow>();
+  return res.results ?? [];
+}
+
+/** 开奖：从资格名单随机抽取；返回中奖者 */
+export async function drawCampaign(
+  db: D1Database,
+  campaign: LuckyCampaignRow,
+  month: string,
+  drawCount: number
+): Promise<{ id: number; first_name: string | null; username: string | null }[]> {
+  const existing = await campaignWinners(db, campaign.id);
+  const existingIds = new Set(existing.map((w) => w.user_id));
+  const eligible = await getEligibleUsers(db, campaign, month);
+  const pool = eligible.filter((u) => !existingIds.has(u.id));
+  // 洗牌
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const picked = pool.slice(0, Math.max(0, drawCount));
+  for (const u of picked) {
+    await db
+      .prepare('INSERT OR IGNORE INTO lucky_winners (campaign_id, user_id, prize) VALUES (?, ?, ?)')
+      .bind(campaign.id, u.id, campaign.prize)
+      .run();
+  }
+  return picked.map((u) => ({ id: u.id, first_name: u.first_name, username: u.username }));
+}
+
+/** 开奖并关闭活动 */
+export async function finalizeCampaign(db: D1Database, campaign: LuckyCampaignRow, month: string): Promise<void> {
+  await db
+    .prepare("UPDATE lucky_campaigns SET status = 'drawn', draw_month = ?, drawn_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?")
+    .bind(month, campaign.id)
+    .run();
+}
+
+/** 补抽：移除最后一名中奖者并补抽一名 */
+export async function redrawLast(db: D1Database, campaign: LuckyCampaignRow, month: string): Promise<{ removed: number; added: { id: number; first_name: string | null; username: string | null }[] }> {
+  const winners = await campaignWinners(db, campaign.id);
+  let removed = 0;
+  if (winners.length > 0) {
+    const last = winners[winners.length - 1];
+    const r = await db.prepare('DELETE FROM lucky_winners WHERE id = ?').bind(last.id).run();
+    removed = r.meta?.changes ?? 0;
+  }
+  const added = await drawCampaign(db, campaign, month, 1);
+  return { removed, added };
+}
+
+/** 标记发货 */
+export async function markShipped(db: D1Database, campaignId: number, userId: number, note: string): Promise<boolean> {
+  const r = await db
+    .prepare('UPDATE lucky_winners SET shipped = 1, ship_note = ? WHERE campaign_id = ? AND user_id = ?')
+    .bind(note, campaignId, userId)
+    .run();
+  return (r.meta?.changes ?? 0) > 0;
+}
