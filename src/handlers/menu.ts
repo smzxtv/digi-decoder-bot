@@ -1,10 +1,8 @@
-import type { BotConfig } from '../config';
+﻿import type { BotConfig } from '../config';
 import type { UserRow } from '../db';
 import { btn } from '../telegram';
 import type { TgInlineKeyboardButton } from '../telegram-types';
 import { esc, fmt } from '../utils/text';
-
-export type KbLine = { text: string; data: string }[];
 
 export function mainMenuText(user: UserRow | null, cfg: BotConfig, rank: number): string {
   const uname = user ? esc(user.first_name ?? '') : '';
@@ -22,9 +20,9 @@ export function mainMenuText(user: UserRow | null, cfg: BotConfig, rank: number)
 
 export function mainKeyboard(isAdmin: boolean, _registered = true): TgInlineKeyboardButton[][] {
   const lines: TgInlineKeyboardButton[][] = [
-    [{ text: '📝 每日签到', callback_data: 'ck:do' }, { text: '👤 我的解码点', callback_data: 'pt:me' }],
+    [{ text: '📝 每日签到', callback_data: 'ck:show' }, { text: '🔥 签到排行', callback_data: 'pt:top' }],
     [{ text: '🧰 工具箱', callback_data: 'tl:show' }, { text: '📚 教程中心', callback_data: 'tu:show' }],
-    [{ text: '🤖 AI 助手', callback_data: 'ai:show' }, { text: '🔥 排行榜', callback_data: 'pt:top' }],
+    [{ text: '🤖 AI 助手', callback_data: 'ai:show' }, { text: '🎁 幸运粉丝', callback_data: 'lk:show' }],
     [{ text: '🎁 邀请奖励', callback_data: 'in:me' }, { text: '❓ 帮助', callback_data: 'hp:show' }],
   ];
   if (isAdmin) lines.push([{ text: '⚙️ 管理面板', callback_data: 'ad:panel' }]);
