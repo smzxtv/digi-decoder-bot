@@ -11,6 +11,7 @@ import { cmdMe, cmdTop, cmdInvite, cmdRedeem } from './points';
 import { cmdAI } from './aiChat';
 import { tutorialsHome } from './tutorials';
 import { cmdLucky } from './lucky';
+import { cmdYouTube } from './youtube';
 import { clearPending } from './tools';
 
 export type CommandHandler = (ctx: Ctx) => Promise<void>;
@@ -202,6 +203,7 @@ export const COMMANDS: Record<string, CommandHandler> = {
   tutorial: cmdTutorials,
   tutorials: cmdTutorials,
   lucky: cmdLucky,
+  youtube: cmdYouTube,
   cancel: cmdCancel,
   // 管理员命令在 adminCommands.ts 中合并
 };
