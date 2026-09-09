@@ -4,6 +4,8 @@ import type { TgUpdate } from './telegram-types';
 import { handleUpdate } from './dispatch';
 import { handleQueueBatch } from './queue';
 import { appendLog } from './handlers/admin';
+import { checkNewVideos } from './handlers/youtube';
+import { getConfig } from './config';
 
 // 简易内存缓存：广告配置（KV 读取后缓存，避免每次请求都读 KV）
 export default {
@@ -54,9 +56,27 @@ export default {
   },
 
   async scheduled(_event: unknown, env: Env): Promise<void> {
+    // YouTube 新视频检查（每 30 分钟 cron 触发），错误落库不影响其他任务
+    try {
+      const ytCfg = await (await import('./config')).getConfig(env);
+      const target = ytCfg.youtube.announceChatId || undefined;
+      if (target) await checkNewVideos(env, target, false);
+    } catch (e) {
+      try {
+        const msg = e instanceof Error ? e.message : String(e);
+        await env.DB.prepare(
+          "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+        ).bind(`yt-error:${Date.now()}`, msg.slice(0, 500)).run();
+      } catch { /* 忽略 */ }
+    }
     // 定期把用户数据备份到 R2（每月 1 日 05:00 Asia/Shanghai 触发）
     // 注意：R2 是可选绑定，未配置时跳过备份
     if (!env.R2_BUCKET) return;
+    // 月度去重：无论 cron 触发多少次，每月只备份一次
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const lastBackup = await env.KV.get('backup:lastMonth').catch(() => null);
+    if (lastBackup === thisMonth) return;
+    await env.KV.put('backup:lastMonth', thisMonth).catch(() => {});
     try {
       const res = await env.DB.prepare('SELECT * FROM users ORDER BY id').all<Record<string, unknown>>();
       const date = new Date().toISOString().slice(0, 10);
