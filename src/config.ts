@@ -8,6 +8,7 @@ export interface BotConfig {
   ai: { enabled: boolean; model: string; maxTokens: number; promptSystem: string; rateLimitPerMin: number; };
   tools: { enabled: string[]; moreTools: { label: string; url: string; }[]; };
   tutorials: { channelUrl: string; categories: string[]; };
+  youtube: { channelUrl: string; announceChatId: string; };
   lucky: { enabled: boolean; prize: string; winners: number; drawDay: number; note: string; announceChatId: string; };
   limits: { maxTextLen: number; };
 }
@@ -34,6 +35,10 @@ export const DEFAULT_CONFIG: BotConfig = {
   tutorials: {
     channelUrl: 'https://www.youtube.com/@DECODING-w7d',
     categories: ['AI', 'VPS', 'Cloudflare', 'Docker', 'Linux', '网络技术', '软件教程'],
+  },
+  youtube: {
+    channelUrl: 'https://www.youtube.com/@DECODING-w7d',
+    announceChatId: '',
   },
   lucky: { enabled: true, prize: '充电器', winners: 2, drawDay: 1, note: '当月签到满 5 天即自动获得抽奖资格。', announceChatId: '' },
   limits: { maxTextLen: 2000 },
