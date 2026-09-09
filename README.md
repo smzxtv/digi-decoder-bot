@@ -264,3 +264,38 @@ digi-decodbot/
 ## 📄 License
 
 MIT —— 可自由用于自己的社群与频道，欢迎 Star ⭐
+
+## 🔄 更新日志
+
+- **v1.2** 精简为核心功能：签到（本月日历）/ 工具箱（+URL 编解码）/ 教程中心直连 YouTube / AI 助手四模式 / 幸运粉丝活动管理（开奖、补抽、发货）/ YouTube 新视频自动推送群
+- **v1.1** 业务默认配置按实际业务调整（签到奖励、欢迎语等）
+- **v1.0** 首次发布
+
+## 📺 YouTube 视频自动推送
+
+频道发布新视频后，机器人每 30 分钟（Cloudflare Cron 定时任务）自动检查一次，发现新视频立即推送到粉丝群：
+
+```text
+🎬 频道更新啦！新视频发布
+
+📢 《视频标题》
+▶️ https://youtu.be/xxxxxxx
+
+📚 更多教程：https://www.youtube.com/@DECODING-w7d
+```
+
+### 设置方法
+
+1. 把机器人拉进粉丝群
+2. 在群里发送 `/youtube announce` —— 绑定本群为通知群
+3. 发送 `/youtube test` —— 立即推送最新一条视频验证效果
+4. 完成！之后无需任何人工干预
+
+| 命令 | 说明 |
+| --- | --- |
+| `/youtube` | 查看状态面板（频道 / 绑定群 / 检查频率） |
+| `/youtube announce` | 在群里绑定通知群 |
+| `/youtube test` | 测试推送频道最新一条视频 |
+| `/youtube check` | 手动触发一次检查 |
+
+**实现原理**：YouTube 官方 RSS（`feeds/videos.xml?channel_id=...`）→ Cron 定时抓取 → KV 记录最新发布时间去重 → Bot API 推送。无需第三方服务，全部在 Workers 免费额度内。
