@@ -251,11 +251,13 @@ digi-decodbot/
 │       ├── points.ts       # 积分 / 排行 / 邀请 / 兑换码
 │       ├── tools.ts        # 工具箱
 │       ├── tutorials.ts    # 教程中心（YouTube 直连）
+│       ├── youtube.ts      # YouTube 新视频自动推送（抓取/去重/推送）
 │       ├── aiChat.ts       # AI 助手
 │       ├── lucky.ts        # 幸运粉丝活动管理
 │       ├── commands.ts     # 命令表
 │       ├── admin.ts        # 管理面板
 │       └── adminCommands.ts# 管理命令注册
+├── docs/                   # 截图 + 完整教程文档（youtube-auto-push.md 等）
 ├── migrations/             # D1 建表 SQL
 ├── scripts/set-webhook.mjs # Webhook 绑定脚本
 └── wrangler.jsonc          # Cloudflare 配置（填你的资源 ID）
@@ -267,13 +269,16 @@ MIT —— 可自由用于自己的社群与频道，欢迎 Star ⭐
 
 ## 🔄 更新日志
 
+- **v1.3** 修复 YouTube 自动推送：频道页新版 `lockupViewModel` 结构解析、`User-Agent` 伪装绕开 RSS 404、抓取失败不再误删缓存、去重改用 `yt:lastVideoId` 精确匹配（兼容无时间戳）、新增完整教程 [docs/youtube-auto-push.md](docs/youtube-auto-push.md)
 - **v1.2** 精简为核心功能：签到（本月日历）/ 工具箱（+URL 编解码）/ 教程中心直连 YouTube / AI 助手四模式 / 幸运粉丝活动管理（开奖、补抽、发货）/ YouTube 新视频自动推送群
 - **v1.1** 业务默认配置按实际业务调整（签到奖励、欢迎语等）
 - **v1.0** 首次发布
 
 ## 📺 YouTube 视频自动推送
 
-频道发布新视频后，机器人每 30 分钟（Cloudflare Cron 定时任务）自动检查一次，发现新视频立即推送到粉丝群：
+> 📖 **完整教程（原理 / 部署 / 命令 / 排错 / 运维）见 [docs/youtube-auto-push.md](docs/youtube-auto-push.md)**
+
+频道发布新视频后，机器人**每 30 分钟**（Cloudflare Cron `*/30 * * * *`）自动检查一次，发现新视频立即推送到绑定的粉丝群，**无需任何人工干预**：
 
 ```text
 🎬 频道更新啦！新视频发布
@@ -297,5 +302,47 @@ MIT —— 可自由用于自己的社群与频道，欢迎 Star ⭐
 | `/youtube announce` | 在群里绑定通知群 |
 | `/youtube test` | 测试推送频道最新一条视频 |
 | `/youtube check` | 手动触发一次检查 |
+| `/youtube id UC…` | 设置频道 ID 并实时验证（推荐） |
 
-**实现原理**：YouTube 官方 RSS（`feeds/videos.xml?channel_id=...`）→ Cron 定时抓取 → KV 记录最新发布时间去重 → Bot API 推送。无需第三方服务，全部在 Workers 免费额度内。
+### 实现原理（多级兜底）
+
+```text
+resolveCandidates()   # KV 已验证 ID → KV 候选 → URL → 频道页解析
+        ▼
+fetchVideosForId(id)
+  ├── 1) RSS: feeds/videos.xml?channel_id=UC…
+  ├── 2) RSS: feeds/videos.xml?playlist_id=UU…（uploads 播放列表）
+  └── 3) 兜底：解析频道页 HTML（lockupViewModel / videoRenderer）
+        ▼
+去重（yt:lastVideoId + yt:lastPublished）──► Bot API 推送
+```
+
+**关键设计**：
+
+- **浏览器化请求头**：Worker 的 `fetch` 默认不带 `User-Agent`，YouTube 会对**所有频道**的 RSS 返回 404（看起来像频道 ID 错误，其实不是）。代码统一使用 `YT_HEADERS`。
+- **三级端点兜底**：`channel_id` → `playlist_id=UU…` → 频道页 HTML，任一级成功即返回。
+- **新版页面结构兼容**：新版 YouTube 用 `lockupViewModel`（视频 ID 在 `"contentId"`，标题在 `lockupMetadataViewModel.title.content`），旧版用 `videoRenderer`，两种都解析。
+- **非破坏性缓存**：抓取失败**绝不删除** `yt:channelId`，只有 `channelExists()` 证明频道真的 404 才清理——避免一次网络抖动造成永久退化。
+
+**KV 状态键**：
+
+| 键 | 作用 |
+| --- | --- |
+| `yt:channelId` | 已验证的频道 ID（30 天 TTL，用 `/youtube id` 重设则 365 天） |
+| `yt:channelCandidates` | 从页面解析出的候选 ID 列表（30 天 TTL） |
+| `yt:lastPublished` | 最新一条视频发布时间，**时间游标只前移** |
+| `yt:lastVideoId` | 最新一条视频 ID，用于**精确去重**（兼容无时间戳的兜底抓取） |
+
+**去重逻辑**：首次运行只记录游标、**不回推历史视频**；正常模式按 `yt:lastVideoId` 精确去重并叠加时间比较；`/youtube test` 无视游标始终推最新一条。
+
+> 💡 兜底抓取拿不到时间戳时，**只更新 `yt:lastVideoId`，不动 `yt:lastPublished`** —— 这是设计如此：时间游标可能停在 09-09，而视频 ID 游标已是 09-11 的最新视频。
+
+### 常见问题排查
+
+| 现象 | 原因与解决 |
+| --- | --- |
+| `RSS 请求全部失败：解析到的 N 个频道 ID 均无效` | 多为 YouTube 临时限流或 Worker 出口被判定为数据中心 IP → 代码已走频道页兜底；稍后重试即可，**频道 ID 会保留**无需重设 |
+| YouTube RSS 返回 404 | 缺 `User-Agent` 的经典问题（对**所有**频道都 404，不代表 ID 错）；代码已内置浏览器化请求头 |
+| 频道页能打开但解析不到视频 | YouTube 页面结构变更 → 已兼容 `lockupViewModel`（新版）与 `videoRenderer`（旧版） |
+| 某次抓取失败后频道 ID 消失 | 旧版本 bug（失败即删缓存）→ 已修复为**仅硬 404 才清缓存** |
+| 群里没有推送 | 确认已 `/youtube announce` 绑定；`/youtube` 查看状态；`/youtube check` 手动触发 |
