@@ -2,6 +2,7 @@ import type { Ctx } from '../ctx';
 import { getConfig, setConfigOverlay } from '../config';
 
 const CHANNEL_ID_KEY = 'yt:channelId';
+const CANDIDATES_KEY = 'yt:channelCandidates';
 const LAST_KEY = 'yt:lastPublished';
 
 export interface RssEntry {
@@ -10,32 +11,66 @@ export interface RssEntry {
   published: string; // ISO 时间
 }
 
-/** 把 handle（youtube.com/@xxx）解析成频道 ID（UC...），结果缓存 30 天 */
-export async function resolveChannelId(env: Ctx['env'], channelUrl: string): Promise<string | null> {
-  let cached = await env.KV.get(CHANNEL_ID_KEY);
-  if (cached) return cached;
+/**
+ * 从频道页面收集候选频道 ID（UC...）。
+ * YouTube 页面 HTML 中包含大量其他频道的 ID，所以收集多个候选，
+ * 之后逐个用 RSS 验证，直到找到能用的。
+ */
+async function resolveCandidates(env: Ctx['env'], channelUrl: string): Promise<string[]> {
+  // 已验证过的频道 ID 最优先
+  const verified = await env.KV.get(CHANNEL_ID_KEY);
+  if (verified) return [verified];
 
-  // 已是 /channel/UC... 形式则直接取
-  const direct = channelUrl.match(/channel\/(UC[\w-]{22})/);
-  if (direct) {
-    await env.KV.put(CHANNEL_ID_KEY, direct[1], { expirationTtl: 30 * 86400 });
-    return direct[1];
+  const cached = await env.KV.get(CANDIDATES_KEY);
+  if (cached) {
+    try {
+      const arr = JSON.parse(cached) as string[];
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    } catch { /* 缓存损坏，重新解析 */ }
   }
 
-  // @handle 形式：抓取频道页面解析 channelId
+  // 已是 /channel/UC... 形式则直接用
+  const direct = channelUrl.match(/channel\/(UC[\w-]{22})/)?.[1];
+  if (direct) return [direct];
+
   const handle = channelUrl.match(/youtube\.com\/@([\w.-]+)/)?.[1];
-  if (!handle) return null;
-  const res = await fetch(`https://www.youtube.com/@${handle}`, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TelegramBot)' },
-  });
-  if (!res.ok) throw new Error(`频道页面请求失败（HTTP ${res.status}）`);
-  const html = await res.text();
-  const id =
-    html.match(/"channelId":"(UC[\w-]{22})"/)?.[1] ??
-    html.match(/channel\/(UC[\w-]{22})/)?.[1] ??
-    null;
-  if (id) await env.KV.put(CHANNEL_ID_KEY, id, { expirationTtl: 30 * 86400 });
-  return id;
+  if (!handle) return [];
+
+  // YouTube 对数据中心 IP 可能返回精简 HTML，
+  // 所以多试几个页面变体，并从多种字段提取频道自身 ID
+  const urls = [
+    `https://www.youtube.com/@${handle}`,
+    `https://www.youtube.com/@${handle}/about`,
+    `https://www.youtube.com/@${handle}/videos`,
+  ];
+  const candidates: string[] = [];
+  const push = (id: string | undefined) => {
+    if (id && !candidates.includes(id)) candidates.push(id);
+  };
+
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      // 频道自身 ID 的多种出现位置（按可靠性排序）
+      push(html.match(/<link[^>]*rel="canonical"[^>]*href="[^"]*\/channel\/(UC[\w-]{22})"/)?.[1]);
+      push(html.match(/"externalId":"(UC[\w-]{22})"/)?.[1]);
+      push(html.match(/<meta[^>]*itemprop="identifier"[^>]*content="(UC[\w-]{22})"/)?.[1]);
+      push(html.match(/"browseId":"(UC[\w-]{22})"/)?.[1]);
+      for (const m of html.matchAll(/"channelId":"(UC[\w-]{22})"/g)) push(m[1]);
+    } catch { /* 单个页面失败不影响其他变体 */ }
+  }
+
+  if (candidates.length > 0) {
+    await env.KV.put(CANDIDATES_KEY, JSON.stringify(candidates), { expirationTtl: 30 * 86400 });
+  }
+  return candidates;
 }
 
 /** XML 实体解码（标题里的 &amp; 等） */
@@ -52,11 +87,30 @@ function escTitle(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/** 拉取频道 RSS 最新视频列表 */
-export async function fetchLatestVideos(channelId: string): Promise<RssEntry[]> {
-  const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`);
-  if (!res.ok) throw new Error(`RSS 请求失败（HTTP ${res.status}）`);
-  const xml = await res.text();
+/** 拉取频道 RSS：逐个尝试候选频道 ID，直到某个 RSS 请求成功且返回视频 */
+export async function fetchLatestVideos(env: Ctx['env'], channelUrl: string): Promise<RssEntry[]> {
+  const candidates = await resolveCandidates(env, channelUrl);
+  if (candidates.length === 0) throw new Error('无法从频道页面解析频道 ID，请确认频道地址正确');
+
+  for (const id of candidates) {
+    const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${id}`);
+    if (!res.ok) continue; // 404 等错误 → 换下一个候选
+    const xml = await res.text();
+    const entries = parseRss(xml);
+    if (entries.length > 0) {
+      // 验证成功：缓存这个可用的频道 ID（30 天）
+      await env.KV.put(CHANNEL_ID_KEY, id, { expirationTtl: 30 * 86400 });
+      return entries;
+    }
+  }
+
+  // 全部失败 → 清空缓存，下次定时任务重新解析
+  await env.KV.delete(CANDIDATES_KEY);
+  await env.KV.delete(CHANNEL_ID_KEY);
+  throw new Error(`RSS 请求全部失败：解析到的 ${candidates.length} 个频道 ID 均无效，请确认频道地址`);
+}
+
+function parseRss(xml: string): RssEntry[] {
   const entries: RssEntry[] = [];
   const re = /<entry>([\s\S]*?)<\/entry>/g;
   let m: RegExpExecArray | null;
@@ -96,10 +150,8 @@ export async function checkNewVideos(
 ): Promise<RssEntry[]> {
   const cfg = await getConfig(env);
   const channelUrl = cfg.youtube.channelUrl || cfg.tutorials.channelUrl;
-  const channelId = await resolveChannelId(env, channelUrl);
-  if (!channelId) throw new Error('无法解析频道 ID，请确认 YouTube 频道地址正确');
 
-  const videos = await fetchLatestVideos(channelId);
+  const videos = await fetchLatestVideos(env, channelUrl);
   if (videos.length === 0) return [];
 
   const last = await env.KV.get(LAST_KEY);
@@ -136,7 +188,9 @@ export async function cmdYouTube(ctx: Ctx): Promise<void> {
     await ctx.reply('❌ 无管理员权限');
     return;
   }
-  const arg = ctx.arg.trim().toLowerCase();
+  // 注意：保留原始大小写（频道 ID 区分大小写），分支匹配时再转小写
+  const raw = ctx.arg.trim();
+  const arg = raw.toLowerCase();
   const cfg = await getConfig(ctx.env);
 
   // 在粉丝群里绑定推送
@@ -148,6 +202,62 @@ export async function cmdYouTube(ctx: Ctx): Promise<void> {
     await setConfigOverlay(ctx.env, { youtube: { ...cfg.youtube, announceChatId: String(ctx.chat.id) } });
     await ctx.reply(
       `✅ 已绑定本群为 YouTube 新视频通知群（<code>${ctx.chat.id}</code>）。\n每 30 分钟自动检查频道，发现新视频立即推送到这里。`
+    );
+    return;
+  }
+
+  // 手动设置频道 ID（自动解析失败时的兜底）
+  // 注意：ID 区分大小写，用 raw（未转小写）提取
+  if (arg.startsWith('id ')) {
+    const idInput = raw.slice(3).trim();
+    const candidates = new Set<string>();
+    // 1) 标准连续 24 位子串
+    for (let i = 0; i + 24 <= idInput.length; i++) {
+      const sub = idInput.slice(i, i + 24);
+      if (/^UC[\w-]{22}$/.test(sub)) candidates.add(sub);
+    }
+    // 2) 智能纠错：输入是 UC 开头的 25~26 位时，尝试"删除任意一个字符"的所有 24 位组合
+    //    （多复制了一个字符 / 转录错了一个字符，都能自动纠正）
+    if (/^UC[\w-]{23,26}$/.test(idInput) && idInput.length > 24) {
+      for (let i = 0; i < idInput.length; i++) {
+        const sub = idInput.slice(0, i) + idInput.slice(i + 1);
+        if (/^UC[\w-]{22}$/.test(sub)) candidates.add(sub);
+      }
+    }
+    if (candidates.size === 0) {
+      await ctx.reply(
+        '⚠️ 没有在输入中找到有效的频道 ID。\n格式：UC 开头 + 22 位字符，共 24 位。\n\n如何查找：\n1️⃣ 电脑浏览器打开你的频道页面\n2️⃣ 右键 → 查看网页源代码\n3️⃣ Ctrl+F 搜索 <code>"browseId"</code> 或 <code>channel/UC</code>\n4️⃣ 复制 UC 开头的 24 位字符\n\n然后发送：/youtube id UCxxxxxxxxxxxxxxxxxxxxxx'
+      );
+      return;
+    }
+    // 逐个候选实测 RSS 验证（最多 30 个，防止超时）
+    const list = [...candidates].slice(0, 30);
+    for (const id of list) {
+      let ok = false;
+      let latestTitle = '';
+      try {
+        const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${id}`);
+        if (res.ok) {
+          const xml = await res.text();
+          const entries = parseRss(xml);
+          if (entries.length > 0) {
+            ok = true;
+            latestTitle = entries[0].title;
+          }
+        }
+      } catch { /* 尝试下一个候选 */ }
+      if (ok) {
+        await ctx.env.KV.put(CHANNEL_ID_KEY, id, { expirationTtl: 365 * 86400 });
+        // 清掉可能已失效的候选缓存
+        await ctx.env.KV.delete(CANDIDATES_KEY);
+        await ctx.reply(
+          `✅ 频道 ID 已设置并验证成功！\n\n🆔 <code>${id}</code>\n📺 最新视频：<b>${escTitle(latestTitle)}</b>\n\n自动推送已就绪！发 <code>/youtube test</code> 可立即推送最新视频。`
+        );
+        return;
+      }
+    }
+    await ctx.reply(
+      `⚠️ 智能验证失败：尝试了 ${list.length} 种候选 ID，RSS 均无效。\n\n请重新精确复制频道 ID：\n1️⃣ 打开频道页面 → 右键 → 查看网页源代码\n2️⃣ Ctrl+F 搜索 <code>"browseId"</code>\n3️⃣ 只复制双引号里的内容（UC 开头）\n4️⃣ 重新发送 /youtube id ...`
     );
     return;
   }
