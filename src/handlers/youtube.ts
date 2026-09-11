@@ -4,6 +4,7 @@ import { getConfig, setConfigOverlay } from '../config';
 const CHANNEL_ID_KEY = 'yt:channelId';
 const CANDIDATES_KEY = 'yt:channelCandidates';
 const LAST_KEY = 'yt:lastPublished';
+const LAST_ID_KEY = 'yt:lastVideoId';
 
 export interface RssEntry {
   videoId: string;
@@ -92,11 +93,10 @@ export async function fetchLatestVideos(env: Ctx['env'], channelUrl: string): Pr
   const candidates = await resolveCandidates(env, channelUrl);
   if (candidates.length === 0) throw new Error('无法从频道页面解析频道 ID，请确认频道地址正确');
 
+  let anyResolved = false;
   for (const id of candidates) {
-    const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${id}`);
-    if (!res.ok) continue; // 404 等错误 → 换下一个候选
-    const xml = await res.text();
-    const entries = parseRss(xml);
+    const { entries, resolved } = await fetchVideosForId(id);
+    if (resolved) anyResolved = true;
     if (entries.length > 0) {
       // 验证成功：缓存这个可用的频道 ID（30 天）
       await env.KV.put(CHANNEL_ID_KEY, id, { expirationTtl: 30 * 86400 });
@@ -104,10 +104,22 @@ export async function fetchLatestVideos(env: Ctx['env'], channelUrl: string): Pr
     }
   }
 
-  // 全部失败 → 清空缓存，下次定时任务重新解析
-  await env.KV.delete(CANDIDATES_KEY);
-  await env.KV.delete(CHANNEL_ID_KEY);
-  throw new Error(`RSS 请求全部失败：解析到的 ${candidates.length} 个频道 ID 均无效，请确认频道地址`);
+  // 只有「所有候选 ID 都没被 YouTube 认可，且频道页也 404」时才判定 ID 失效并清理缓存。
+  // 其余情况（限流 / 网络抖动 / 解析失败）一律保留缓存：
+  // 删掉已验证的 ID 会让下次只能重新爬页面，属于"越修越坏"。
+  if (!anyResolved) {
+    const alive = await channelExists(candidates[0]);
+    if (!alive) {
+      await env.KV.delete(CANDIDATES_KEY);
+      await env.KV.delete(CHANNEL_ID_KEY);
+      throw new Error('频道 ID 已失效：RSS 与频道页均返回 404，请重新发送 /youtube id UC… 设置');
+    }
+  }
+
+  throw new Error(
+    `拉取频道视频失败：已尝试 ${candidates.length} 个频道 ID（RSS + 频道页兜底均未取到视频）。` +
+    `这通常是 YouTube 临时限流，请稍后重试；频道 ID 已保留，无需重新设置。`
+  );
 }
 
 function parseRss(xml: string): RssEntry[] {
@@ -122,6 +134,111 @@ function parseRss(xml: string): RssEntry[] {
     if (videoId) entries.push({ videoId, title: xmlDecode(title), published });
   }
   return entries;
+}
+
+// ============ YouTube 抓取辅助 ============
+
+/**
+ * 浏览器化请求头。
+ * Workers 的 fetch 默认不带 User-Agent，YouTube 对这种"裸请求"
+ * 会直接给 feeds/videos.xml 返回 404（看起来像频道 ID 错误，其实不是）。
+ */
+const YT_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept': 'application/xml,text/xml,text/html,application/xhtml+xml,*/*;q=0.8',
+};
+
+/** 频道 ID（UC…）→ 上传列表 ID（UU…），RSS 的另一种写法 */
+function uploadsId(channelId: string): string {
+  return 'UU' + channelId.slice(2);
+}
+
+/**
+ * 用多个端点尝试拉取某个频道 ID 的视频列表。
+ * resolved=true 表示至少有一个端点返回了 HTTP 200（即该 ID 被 YouTube 认可）。
+ */
+async function fetchVideosForId(id: string): Promise<{ entries: RssEntry[]; resolved: boolean }> {
+  const urls = [
+    `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
+    `https://www.youtube.com/feeds/videos.xml?playlist_id=${uploadsId(id)}`,
+  ];
+  let resolved = false;
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, { headers: YT_HEADERS });
+      if (!res.ok) continue;
+      resolved = true;
+      const xml = await res.text();
+      const entries = parseRss(xml);
+      if (entries.length > 0) return { entries, resolved };
+    } catch { /* 换下一个端点 */ }
+  }
+  // RSS 不通时的兜底：直接解析频道页面
+  const fallback = await fetchVideosFromChannelPage(id);
+  if (fallback.length > 0) return { entries: fallback, resolved: true };
+  return { entries: [], resolved };
+}
+
+/**
+ * 兜底抓取：从频道 /videos 页面 HTML 中提取最新一条视频。
+ * 页面里没有精确时间戳，published 留空，去重交给 yt:lastVideoId。
+ */
+async function fetchVideosFromChannelPage(id: string): Promise<RssEntry[]> {
+  const urls = [
+    `https://www.youtube.com/channel/${id}/videos`,
+    `https://www.youtube.com/@${id}/videos`,
+  ];
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, { headers: YT_HEADERS });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const entries = parseChannelPage(html);
+      if (entries.length > 0) return entries;
+    } catch { /* 继续尝试下一个地址 */ }
+  }
+  return [];
+}
+
+/**
+ * 从频道页 HTML 的 ytInitialData 中提取最新视频（只取第一条，避免误推历史视频）。
+ * 新版 YouTube 用 lockupViewModel 结构：
+ *   "contentId":"<id>","contentType":"LOCKUP_CONTENT_TYPE_VIDEO" ... "lockupMetadataViewModel":{"title":{"content":"<标题>"}
+ * 旧版用 videoRenderer + title.runs[].text，两者都兼容。
+ */
+function parseChannelPage(html: string): RssEntry[] {
+  // 新版：先定位第一条视频的 contentId，再在其所属片段内取标题
+  const re = /"contentId":"([\w-]{11})","contentType":"LOCKUP_CONTENT_TYPE_VIDEO"/g;
+  const m = re.exec(html);
+  if (m && m[1] && m.index !== undefined) {
+    const rest = html.slice(m.index);
+    const next = rest.indexOf('"contentId":"', m[0].length);
+    const block = next > 0 ? rest.slice(0, next) : rest.slice(0, 20000);
+    const t = block.match(/"lockupMetadataViewModel":\{"title":\{"content":"((?:[^"\\]|\\.)*)"/);
+    let title = t ? t[1] : '';
+    if (title) { try { title = JSON.parse(`"${title}"`) as string; } catch { /* 保留原样 */ } }
+    return [{ videoId: m[1], title: xmlDecode(title), published: '' }];
+  }
+  // 旧版兜底：videoRenderer / richItemRenderer
+  const m2 = html.match(/"videoId":"([\w-]{11})"[\s\S]{0,1200}?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"\}\]/);
+  if (!m2) return [];
+  let title = m2[2];
+  try { title = JSON.parse(`"${m2[2]}"`) as string; } catch { /* 保留原样 */ }
+  return [{ videoId: m2[1], title: xmlDecode(title), published: '' }];
+}
+
+/** 判断频道页是否存在：用于区分「ID 真的失效」与「只是被限流」 */
+async function channelExists(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`https://www.youtube.com/channel/${id}`, { headers: YT_HEADERS });
+    if (res.status === 404) return false;
+    if (!res.ok) return true; // 403 / 429 等 → 视为暂时性，不判定 ID 失效
+    const html = await res.text();
+    return !/this page isn't available/i.test(html);
+  } catch {
+    return true; // 网络异常 → 保守处理，保留缓存
+  }
 }
 
 /** 通过 Bot API 直接发消息（绕过 ctx，供定时任务使用） */
@@ -151,23 +268,35 @@ export async function checkNewVideos(
   const cfg = await getConfig(env);
   const channelUrl = cfg.youtube.channelUrl || cfg.tutorials.channelUrl;
 
-  const videos = await fetchLatestVideos(env, channelUrl);
-  if (videos.length === 0) return [];
+  const fetched = await fetchLatestVideos(env, channelUrl);
+  if (fetched.length === 0) return [];
 
+  const isIso = (v: RssEntry) => /^\d{4}-\d{2}-\d{2}T/.test(v.published);
   const last = await env.KV.get(LAST_KEY);
+  const lastId = await env.KV.get(LAST_ID_KEY);
+
   let toPush: RssEntry[] = [];
-  if (!last) {
-    await env.KV.put(LAST_KEY, videos[0].published);
-    if (forceLatest) toPush = [videos[0]];
+  if (forceLatest) {
+    // 测试模式：无视游标，始终推送最新一条
+    toPush = [fetched[0]];
+  } else if (!last && !lastId) {
+    // 首次运行：只记录游标，不回推历史视频
+    toPush = [];
   } else {
-    toPush = videos.filter((v) => v.published > last);
-    if (forceLatest && toPush.length === 0) toPush = [videos[0]];
+    // 正常模式：按 videoId 去重（兼容无时间戳的兜底抓取），有时间戳时再叠加时间比较
+    toPush = fetched.filter((v) => {
+      if (lastId && v.videoId === lastId) return false;
+      if (last && isIso(v)) return v.published > last;
+      return true;
+    });
   }
 
-  if (toPush.length > 0) {
-    const newest = toPush.reduce((a, b) => (a.published > b.published ? a : b));
+  // 推进游标：fetched[0] 即当前最新，时间游标只允许前移，避免回退导致重复推送
+  const newest = fetched[0];
+  if (isIso(newest) && (!last || newest.published > last)) {
     await env.KV.put(LAST_KEY, newest.published);
   }
+  await env.KV.put(LAST_ID_KEY, newest.videoId);
 
   for (const v of toPush) {
     if (chatId === undefined) continue;
@@ -236,14 +365,10 @@ export async function cmdYouTube(ctx: Ctx): Promise<void> {
       let ok = false;
       let latestTitle = '';
       try {
-        const res = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${id}`);
-        if (res.ok) {
-          const xml = await res.text();
-          const entries = parseRss(xml);
-          if (entries.length > 0) {
-            ok = true;
-            latestTitle = entries[0].title;
-          }
+        const { entries } = await fetchVideosForId(id);
+        if (entries.length > 0) {
+          ok = true;
+          latestTitle = entries[0].title;
         }
       } catch { /* 尝试下一个候选 */ }
       if (ok) {
